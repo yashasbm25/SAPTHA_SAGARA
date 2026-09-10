@@ -16,7 +16,6 @@ const MapComponent: React.FC = () => {
       zoom: 6
     });
 
-    // Add a marker for default location (Mangalore)
     new maplibregl.Marker()
       .setLngLat([74.7421, 13.3386])
       .addTo(map.current);
