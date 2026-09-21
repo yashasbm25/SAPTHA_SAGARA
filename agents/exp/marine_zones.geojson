@@ -1,0 +1,24 @@
+{
+"type": "FeatureCollection",
+"features": [
+{
+"type": "Feature",
+"properties": {
+"name": "Demo Restricted Marine Zone",
+"type": "Restricted Area"
+},
+"geometry": {
+"type": "Polygon",
+"coordinates": [
+[
+[74.45, 11.95],
+[74.55, 11.95],
+[74.55, 12.05],
+[74.45, 12.05],
+[74.45, 11.95]
+]
+]
+}
+}
+]
+}
