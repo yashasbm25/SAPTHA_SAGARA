@@ -3,24 +3,23 @@ import os
 import requests
 from google import genai
 from dotenv import load_dotenv
+
+# Your new modular imports
 from gis import check_geofence
 from pfz import get_pfz_advisory
+from weather_agent import WeatherAgent
+from ocean_agent import OceanAgent
 from decision_engine import generate_fishing_advisory
 from planner import create_plan
 from route_engine import (
-    generate_route,
-    build_route_points,
-    generate_alternate_route,
-    generate_candidate_routes,
-    calculate_route_segments,
-    calculate_distance
+    generate_route, build_route_points, generate_alternate_route,
+    generate_candidate_routes, calculate_route_segments, calculate_distance
 )
+
 # ============================================================
 # ENVIRONMENT
 # ============================================================
-
 load_dotenv()
-
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 if not GEMINI_API_KEY:
@@ -29,12 +28,12 @@ if not GEMINI_API_KEY:
         "Make sure it is present in the .env file."
     )
 
-
-client = genai.Client(
-    api_key=GEMINI_API_KEY
-)
-
+client = genai.Client(api_key=GEMINI_API_KEY)
 MODEL_NAME = "gemini-3.6-flash"
+
+# Instantiate your new agents here
+weather_agent = WeatherAgent()
+ocean_agent = OceanAgent()
 
 
 # ============================================================
@@ -177,305 +176,6 @@ def get_location(location_name):
         raise
 
 
-# ============================================================
-# WEATHER
-# ============================================================
-
-def get_weather(
-    latitude,
-    longitude
-):
-    """
-    Fetch current weather from Open-Meteo.
-    """
-
-    try:
-
-        url = (
-            "https://api.open-meteo.com/v1/forecast"
-        )
-
-        params = {
-            "latitude": latitude,
-            "longitude": longitude,
-            "current": (
-                "temperature_2m,"
-                "relative_humidity_2m,"
-                "precipitation,"
-                "wind_speed_10m,"
-                "wind_direction_10m"
-            ),
-            "timezone": "auto"
-        }
-
-        response = requests.get(
-            url,
-            params=params,
-            timeout=10
-        )
-
-        response.raise_for_status()
-
-        data = response.json()
-
-        current = data.get(
-            "current",
-            {}
-        )
-
-        return {
-            "temperature": current.get(
-                "temperature_2m"
-            ),
-            "humidity": current.get(
-                "relative_humidity_2m"
-            ),
-            "precipitation": current.get(
-                "precipitation"
-            ),
-            "wind_speed": current.get(
-                "wind_speed_10m"
-            ),
-            "wind_direction": current.get(
-                "wind_direction_10m"
-            ),
-            "source": "Open-Meteo"
-        }
-
-    except Exception as error:
-
-        return {
-            "error": str(error),
-            "source": "Open-Meteo"
-        }
-
-
-# ============================================================
-# WEATHER FORECAST
-# ============================================================
-
-def get_forecast(
-    latitude,
-    longitude
-):
-    """
-    Fetch short forecast from Open-Meteo.
-    """
-
-    try:
-
-        url = (
-            "https://api.open-meteo.com/v1/forecast"
-        )
-
-        params = {
-            "latitude": latitude,
-            "longitude": longitude,
-            "hourly": (
-                "temperature_2m,"
-                "precipitation_probability,"
-                "wind_speed_10m,"
-                "wind_direction_10m"
-            ),
-            "forecast_days": 2,
-            "timezone": "auto"
-        }
-
-        response = requests.get(
-            url,
-            params=params,
-            timeout=10
-        )
-
-        response.raise_for_status()
-
-        data = response.json()
-
-        return {
-            "time": data.get(
-                "hourly",
-                {}
-            ).get("time", [])[:12],
-
-            "temperature": data.get(
-                "hourly",
-                {}
-            ).get("temperature_2m", [])[:12],
-
-            "precipitation_probability": data.get(
-                "hourly",
-                {}
-            ).get(
-                "precipitation_probability",
-                []
-            )[:12],
-
-            "wind_speed": data.get(
-                "hourly",
-                {}
-            ).get(
-                "wind_speed_10m",
-                []
-            )[:12],
-
-            "wind_direction": data.get(
-                "hourly",
-                {}
-            ).get(
-                "wind_direction_10m",
-                []
-            )[:12],
-
-            "source": "Open-Meteo"
-        }
-
-    except Exception as error:
-
-        return {
-            "error": str(error),
-            "source": "Open-Meteo"
-        }
-
-
-# ============================================================
-# OCEAN CONDITIONS
-# ============================================================
-
-def get_ocean_conditions(
-    latitude,
-    longitude
-):
-    """
-    Fetch marine conditions from Open-Meteo Marine API.
-    """
-
-    try:
-
-        url = (
-            "https://marine-api.open-meteo.com/v1/marine"
-        )
-
-        params = {
-            "latitude": latitude,
-            "longitude": longitude,
-
-            "current": (
-                "wave_height,"
-                "wave_direction,"
-                "wave_period,"
-                "swell_wave_height,"
-                "swell_wave_direction,"
-                "swell_wave_period"
-            ),
-
-            "timezone": "auto"
-        }
-
-        response = requests.get(
-            url,
-            params=params,
-            timeout=10
-        )
-
-        response.raise_for_status()
-
-        data = response.json()
-
-        current = data.get(
-            "current",
-            {}
-        )
-
-        return {
-            "wave_height": current.get(
-                "wave_height"
-            ),
-
-            "wave_direction": current.get(
-                "wave_direction"
-            ),
-
-            "wave_period": current.get(
-                "wave_period"
-            ),
-
-            "swell_wave_height": current.get(
-                "swell_wave_height"
-            ),
-
-            "swell_wave_direction": current.get(
-                "swell_wave_direction"
-            ),
-
-            "swell_wave_period": current.get(
-                "swell_wave_period"
-            ),
-
-            "source": "Open-Meteo Marine"
-        }
-
-    except Exception as error:
-
-        return {
-            "error": str(error),
-            "source": "Open-Meteo Marine"
-        }
-
-
-# ============================================================
-# SEA TEMPERATURE
-# ============================================================
-
-def get_sea_temperature(
-    latitude,
-    longitude
-):
-    """
-    Fetch sea-surface temperature if available.
-    """
-
-    try:
-
-        url = (
-            "https://marine-api.open-meteo.com/v1/marine"
-        )
-
-        params = {
-            "latitude": latitude,
-            "longitude": longitude,
-            "current": "sea_surface_temperature",
-            "timezone": "auto"
-        }
-
-        response = requests.get(
-            url,
-            params=params,
-            timeout=10
-        )
-
-        response.raise_for_status()
-
-        data = response.json()
-
-        current = data.get(
-            "current",
-            {}
-        )
-
-        return {
-            "sea_surface_temperature": current.get(
-                "sea_surface_temperature"
-            ),
-            "source": "Open-Meteo Marine"
-        }
-
-    except Exception as error:
-
-        return {
-            "error": str(error),
-            "source": "Open-Meteo Marine"
-        }
-
 
 # ============================================================
 # CHLOROPHYLL
@@ -545,104 +245,32 @@ def get_gis(
         }
 
 
-# ============================================================
-# PFZ
-# ============================================================
 
-def get_pfz(
-    latitude=None,
-    longitude=None
-):
-    """
-    Fetch PFZ advisory.
-
-    Current PFZ implementation is based on the available
-    INCOIS advisory integration.
-    """
-
-    try:
-
-        return get_pfz_advisory()
-
-    except Exception as error:
-
-        return {
-            "error": str(error),
-            "source": "INCOIS"
-        }
 
 
 # ============================================================
 # TOOL EXECUTION
 # ============================================================
 
-def execute_tool(
-    tool_name,
-    latitude,
-    longitude
-):
-    """
-    Execute a marine intelligence tool.
-    """
-
+def execute_tool(tool_name, latitude, longitude):
     if tool_name == "get_location":
-
-        return get_location(
-            str(latitude)
-        )
-
+        return get_location(str(latitude))
     if tool_name == "get_weather":
-
-        return get_weather(
-            latitude,
-            longitude
-        )
-
+        return weather_agent.get_weather(latitude, longitude)
     if tool_name == "get_forecast":
-
-        return get_forecast(
-            latitude,
-            longitude
-        )
-
+        return weather_agent.get_forecast(latitude, longitude)
     if tool_name == "get_ocean_conditions":
-
-        return get_ocean_conditions(
-            latitude,
-            longitude
-        )
-
+        return ocean_agent.get_ocean_conditions(latitude, longitude)
     if tool_name == "get_sea_temperature":
-
-        return get_sea_temperature(
-            latitude,
-            longitude
-        )
-
+        return ocean_agent.get_sea_temperature(latitude, longitude)
     if tool_name == "get_chlorophyll":
-
-        return get_chlorophyll(
-            latitude,
-            longitude
-        )
-
+        return get_chlorophyll(latitude, longitude)
     if tool_name == "get_pfz":
-
-        return get_pfz(
-            latitude,
-            longitude
-        )
-
+        return get_pfz_advisory(latitude, longitude)
     if tool_name == "get_gis":
-
-        return get_gis(
-            latitude,
-            longitude
-        )
-
-    raise ValueError(
-        f"Unknown tool: {tool_name}"
-    )
+        return get_gis(latitude, longitude)
+    
+    raise ValueError(f"Unknown tool: {tool_name}")
 
 
 # ============================================================
@@ -783,95 +411,30 @@ Important rules:
 # ROUTE POINT ANALYZER
 # ============================================================
 
-def analyze_route_point(
-    point
-):
-    """
-    Analyze one route point using:
-
-        Weather
-        Ocean
-        GIS
-        Deterministic Risk Engine
-
-    Returns structured point-level intelligence.
-    """
-
+def analyze_route_point(point):
     latitude, longitude = point
 
-    # --------------------------------------------------------
-    # Weather
-    # --------------------------------------------------------
-
-    weather = get_weather(
-        latitude,
-        longitude
-    )
-
-    # --------------------------------------------------------
-    # Ocean
-    # --------------------------------------------------------
-
-    ocean = get_ocean_conditions(
-        latitude,
-        longitude
-    )
-
-    # --------------------------------------------------------
-    # GIS
-    # --------------------------------------------------------
-
-    gis = get_gis(
-        latitude,
-        longitude
-    )
-
-    # --------------------------------------------------------
-    # Deterministic risk engine
-    # --------------------------------------------------------
+    weather = weather_agent.get_weather(latitude, longitude)
+    ocean = ocean_agent.get_ocean_conditions(latitude, longitude)
+    gis = get_gis(latitude, longitude)
+    pfz = get_pfz_advisory(latitude, longitude)
 
     advisory = generate_fishing_advisory(
         weather=weather,
         ocean=ocean,
-        pfz={},
+        pfz=pfz,
         gis=gis
-    )
-
-    # --------------------------------------------------------
-    # Extract risk
-    # --------------------------------------------------------
-
-    risk_score = advisory.get(
-        "risk_score",
-        0
-    )
-
-    risk_level = advisory.get(
-        "risk_level",
-        "UNKNOWN"
-    )
-
-    restricted = gis.get(
-        "restricted",
-        False
     )
 
     return {
         "latitude": latitude,
         "longitude": longitude,
-
-        "risk_score": risk_score,
-
-        "risk_level": risk_level,
-
-        "restricted": restricted,
-
+        "risk_score": advisory.get("risk_score", 0),
+        "risk_level": advisory.get("risk_level", "UNKNOWN"),
+        "restricted": gis.get("restricted", False),
         "gis": gis,
-
         "weather": weather,
-
         "ocean": ocean,
-
         "advisory": advisory
     }
 
