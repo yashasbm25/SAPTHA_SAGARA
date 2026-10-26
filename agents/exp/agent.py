@@ -1,1408 +1,572 @@
+
 import json
+import math
 import os
+import re
+from datetime import datetime, timezone
+
 import requests
-from google import genai
+import searoute as sr
 from dotenv import load_dotenv
 
-# Your new modular imports
-from gis import check_geofence
-from pfz import get_pfz_advisory
-from weather_agent import WeatherAgent
-from ocean_agent import OceanAgent
-from decision_engine import generate_fishing_advisory
-from planner import create_plan
-from route_engine import (
-    generate_route, build_route_points, generate_alternate_route,
-    generate_candidate_routes, calculate_route_segments, calculate_distance
-)
+try:
+    from google import genai
+except ImportError:
+    genai = None
+
 
 # ============================================================
-# ENVIRONMENT
+# SAPTHA SAGARA — Marine Intelligence Agent
 # ============================================================
+
 load_dotenv()
+
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+MODEL_NAME = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
 
-if not GEMINI_API_KEY:
-    raise ValueError(
-        "GEMINI_API_KEY not found. "
-        "Make sure it is present in the .env file."
-    )
+client = None
 
-client = genai.Client(api_key=GEMINI_API_KEY)
-MODEL_NAME = "gemini-3.6-flash"
+if GEMINI_API_KEY and genai is not None:
+    try:
+        client = genai.Client(api_key=GEMINI_API_KEY)
+    except Exception as exc:
+        print(f"Gemini initialization failed: {exc}")
 
-# Instantiate your new agents here
-weather_agent = WeatherAgent()
-ocean_agent = OceanAgent()
+
+HEADERS = {
+    "User-Agent": "SAPTHA-SAGARA-Marine-Intelligence/1.0"
+}
+
+LOCATION_ALIASES = {
+    "mangalore": "Mangalore, Karnataka, India",
+    "mangaluru": "Mangalore, Karnataka, India",
+    "goa": "Goa, India",
+    "panaji": "Panaji, Goa, India",
+    "karwar": "Karwar, Karnataka, India",
+    "udupi": "Udupi, Karnataka, India",
+    "kundapura": "Kundapura, Karnataka, India",
+    "bhatkal": "Bhatkal, Karnataka, India",
+    "honnavar": "Honnavar, Karnataka, India",
+    "kumta": "Kumta, Karnataka, India",
+    "cochin": "Kochi, Kerala, India",
+    "kochi": "Kochi, Kerala, India",
+    "mumbai": "Mumbai, Maharashtra, India",
+    "chennai": "Chennai, Tamil Nadu, India",
+    "visakhapatnam": "Visakhapatnam, Andhra Pradesh, India",
+    "vizag": "Visakhapatnam, Andhra Pradesh, India",
+    "karnataka": "Karnataka, India",
+    "kerala": "Kerala, India",
+}
 
 
 # ============================================================
-# LOCATION
+# 1. LOCATION LOOKUP
 # ============================================================
 
 def get_location(location_name):
-    """
-    Resolve a place name to coordinates.
+    """Resolve a place name to latitude and longitude."""
 
-    SAPTHA SAGARA primarily targets Indian marine locations,
-    so ambiguous locations are explicitly constrained to India.
+    if not location_name:
+        return {"error": "Location name cannot be empty."}
 
-    Returns:
-        {
-            "name": "...",
-            "latitude": ...,
-            "longitude": ...,
-            "coordinates": (latitude, longitude)
-        }
-    """
+    clean_name = str(location_name).strip()
+
+    if not clean_name:
+        return {"error": "Location name cannot be empty."}
+
+    search_name = LOCATION_ALIASES.get(
+        clean_name.lower(),
+        clean_name if "india" in clean_name.lower()
+        else f"{clean_name}, India"
+    )
+
+    url = "https://nominatim.openstreetmap.org/search"
+
+    params = {
+        "q": search_name,
+        "format": "json",
+        "limit": 1,
+        "countrycodes": "in",
+    }
 
     try:
-
-        # ----------------------------------------------------
-        # Normalize common marine locations
-        # ----------------------------------------------------
-
-        aliases = {
-            "mangalore": "Mangalore, Karnataka, India",
-            "mangaluru": "Mangalore, Karnataka, India",
-
-            "goa": "Goa, India",
-            "panaji": "Panaji, Goa, India",
-
-            "karwar": "Karwar, Karnataka, India",
-            "udupi": "Udupi, Karnataka, India",
-            "kundapura": "Kundapura, Karnataka, India",
-            "bhatkal": "Bhatkal, Karnataka, India",
-            "honnavar": "Honnavar, Karnataka, India",
-            "kumta": "Kumta, Karnataka, India",
-
-            "cochin": "Kochi, Kerala, India",
-            "kochi": "Kochi, Kerala, India",
-
-            "mumbai": "Mumbai, Maharashtra, India",
-            "chennai": "Chennai, Tamil Nadu, India",
-
-            "visakhapatnam": "Visakhapatnam, Andhra Pradesh, India",
-            "vizag": "Visakhapatnam, Andhra Pradesh, India"
-        }
-
-        clean_name = (
-            str(location_name)
-            .strip()
-            .lower()
-        )
-
-        search_name = aliases.get(
-            clean_name,
-            f"{location_name}, India"
-        )
-
-        print(
-            f"Location search: {search_name}"
-        )
-
-        # ----------------------------------------------------
-        # OpenStreetMap Nominatim
-        # ----------------------------------------------------
-
-        url = (
-            "https://nominatim.openstreetmap.org/search"
-        )
-
-        params = {
-            "q": search_name,
-            "format": "json",
-            "limit": 1,
-            "countrycodes": "in"
-        }
-
-        headers = {
-            "User-Agent": (
-                "SapthaSagara-MarineAI/1.0"
-            )
-        }
-
         response = requests.get(
             url,
             params=params,
-            headers=headers,
-            timeout=10
+            headers=HEADERS,
+            timeout=15,
         )
-
         response.raise_for_status()
+        results = response.json()
 
-        data = response.json()
+        if not results:
+            return {
+                "error": f"Could not find location: {clean_name}"
+            }
 
-        if not data:
-            raise ValueError(
-                f"Could not resolve location: "
-                f"{location_name}"
-            )
-
-        result = data[0]
-
-        latitude = float(
-            result["lat"]
-        )
-
-        longitude = float(
-            result["lon"]
-        )
-
-        display_name = result.get(
-            "display_name",
-            location_name
-        )
-
-        coordinates = (
-            latitude,
-            longitude
-        )
+        place = results[0]
+        latitude = float(place["lat"])
+        longitude = float(place["lon"])
 
         return {
-            "name": display_name,
+            "name": place.get("display_name", clean_name),
             "latitude": latitude,
             "longitude": longitude,
-            "coordinates": coordinates
+            "coordinates": [latitude, longitude],
         }
 
-    except Exception as error:
-
-        print(
-            f"Location resolution error "
-            f"for {location_name}: {error}"
-        )
-
-        raise
-
-
-
-# ============================================================
-# CHLOROPHYLL
-# ============================================================
-
-def get_chlorophyll(
-    latitude,
-    longitude
-):
-    """
-    Attempt chlorophyll retrieval.
-
-    INCOIS ERDDAP availability can vary, so failures are
-    returned cleanly rather than crashing the complete agent.
-    """
-
-    try:
-
+    except (requests.RequestException, ValueError, KeyError) as exc:
+        print(f"Location lookup failed: {exc}")
         return {
-            "status": "UNAVAILABLE",
-            "message": (
-                "Chlorophyll data source is currently "
-                "unavailable for this coordinate."
-            ),
-            "latitude": latitude,
-            "longitude": longitude,
-            "source": "INCOIS ERDDAP"
-        }
-
-    except Exception as error:
-
-        return {
-            "error": str(error),
-            "source": "INCOIS ERDDAP"
+            "error": "Location service failed.",
+            "details": str(exc),
         }
 
 
 # ============================================================
-# GIS
+# 2. LOCATION EXTRACTION FROM USER QUERY
 # ============================================================
 
-def get_gis(
-    latitude,
-    longitude
-):
-    """
-    Check whether coordinate falls inside a configured
-    marine geofence/restricted polygon.
-    """
+def extract_location(query):
+    """Extract a supported place name from a marine query."""
 
-    try:
+    query_lower = query.lower()
 
-        result = check_geofence(
-            latitude,
-            longitude
-        )
-
-        return result
-
-    except Exception as error:
-
-        return {
-            "restricted": False,
-            "zone": None,
-            "type": None,
-            "error": str(error)
-        }
-
-
-
-
-
-# ============================================================
-# TOOL EXECUTION
-# ============================================================
-
-def execute_tool(tool_name, latitude, longitude):
-    if tool_name == "get_location":
-        return get_location(str(latitude))
-    if tool_name == "get_weather":
-        return weather_agent.get_weather(latitude, longitude)
-    if tool_name == "get_forecast":
-        return weather_agent.get_forecast(latitude, longitude)
-    if tool_name == "get_ocean_conditions":
-        return ocean_agent.get_ocean_conditions(latitude, longitude)
-    if tool_name == "get_sea_temperature":
-        return ocean_agent.get_sea_temperature(latitude, longitude)
-    if tool_name == "get_chlorophyll":
-        return get_chlorophyll(latitude, longitude)
-    if tool_name == "get_pfz":
-        return get_pfz_advisory(latitude, longitude)
-    if tool_name == "get_gis":
-        return get_gis(latitude, longitude)
-    
-    raise ValueError(f"Unknown tool: {tool_name}")
-
-
-# ============================================================
-# QUERY UNDERSTANDING
-# ============================================================
-
-def understand_query(
-    user_query
-):
-    """
-    Gemini-based intent and entity extraction.
-    """
-
-    prompt = f"""
-You are the intent-classification component of
-SAPTHA SAGARA, an Agentic AI Marine Intelligence Platform.
-
-Analyze the user query and return ONLY valid JSON.
-
-Possible intents:
-
-SAFETY_ASSESSMENT
-PFZ_DISCOVERY
-FISHING_POTENTIAL
-MARINE_CONDITIONS
-HAZARD_CHECK
-GENERAL_MARINE_QUERY
-ROUTE_PLANNING
-
-For ROUTE_PLANNING:
-- identify origin
-- identify destination
-- both should be place names
-
-Return exactly:
-
-{{
-    "intent": "...",
-    "location": "...",
-    "origin": "...",
-    "destination": "..."
-}}
-
-If a field is unavailable, use null.
-
-User query:
-{user_query}
-"""
-
-    response = client.models.generate_content(
-        model=MODEL_NAME,
-        contents=prompt
+    # Check longer place names first.
+    aliases = sorted(
+        LOCATION_ALIASES.keys(),
+        key=len,
+        reverse=True,
     )
 
-    text = response.text.strip()
+    for alias in aliases:
+        pattern = r"\b" + re.escape(alias) + r"\b"
 
-    # Remove accidental markdown fences
-    if text.startswith("```"):
-        text = text.replace(
-            "```json",
-            ""
-        ).replace(
-            "```",
-            ""
-        ).strip()
+        if re.search(pattern, query_lower):
+            return alias
 
-    try:
-
-        result = json.loads(text)
-
-    except json.JSONDecodeError:
-
-        return {
-            "intent": "GENERAL_MARINE_QUERY",
-            "location": None,
-            "origin": None,
-            "destination": None
-        }
-
-    return result
-
-
-# ============================================================
-# FINAL RESPONSE GENERATION
-# ============================================================
-
-def generate_final_response(
-    user_query,
-    data
-):
-    """
-    Convert structured agent output into a concise
-    natural-language response.
-    """
-
-    prompt = f"""
-You are SAPTHA SAGARA, an Agentic AI Marine Intelligence
-Assistant.
-
-Answer the user's question using ONLY the provided
-structured data.
-
-User:
-{user_query}
-
-Structured data:
-{json.dumps(data, indent=2, default=str)}
-
-Important rules:
-
-1. Do not invent marine conditions.
-2. Clearly mention when data is unavailable.
-3. For route planning, explain:
-   - origin
-   - destination
-   - route selected
-   - route distance
-   - risk level
-   - risk score
-   - whether an alternate route was used
-   - why it was selected
-4. Mention restricted zones if present.
-5. Keep the answer concise and suitable for a fisherman,
-   maritime operator, or judge demonstration.
-6. Do not claim the route is certified navigation.
-7. Call it a decision-support route.
-"""
-
-    response = client.models.generate_content(
-        model=MODEL_NAME,
-        contents=prompt
+    # Attempt to handle queries such as:
+    # "Check conditions near Murudeshwar"
+    match = re.search(
+        r"\b(?:near|at|around|off|coast of|coastal waters near)"
+        r"\s+([a-zA-Z][a-zA-Z\s-]{1,40})",
+        query,
+        re.IGNORECASE,
     )
 
-    return response.text.strip()
+    if match:
+        candidate = match.group(1).strip()
+
+        candidate = re.split(
+            r"\b(?:for|with|including|and|today|tomorrow|"
+            r"right now|currently|,)\b",
+            candidate,
+            maxsplit=1,
+            flags=re.IGNORECASE,
+        )[0].strip()
+
+        if candidate:
+            return candidate
+
+    return "Mangalore"
 
 
 # ============================================================
-# ROUTE POINT ANALYZER
+# 3. FETCH WEATHER CONDITIONS
 # ============================================================
 
-def analyze_route_point(point):
-    latitude, longitude = point
+def get_weather(latitude, longitude):
+    """Fetch current weather from Open-Meteo."""
 
-    weather = weather_agent.get_weather(latitude, longitude)
-    ocean = ocean_agent.get_ocean_conditions(latitude, longitude)
-    gis = get_gis(latitude, longitude)
-    pfz = get_pfz_advisory(latitude, longitude)
+    url = "https://api.open-meteo.com/v1/forecast"
 
-    advisory = generate_fishing_advisory(
-        weather=weather,
-        ocean=ocean,
-        pfz=pfz,
-        gis=gis
-    )
-
-    return {
+    params = {
         "latitude": latitude,
         "longitude": longitude,
-        "risk_score": advisory.get("risk_score", 0),
-        "risk_level": advisory.get("risk_level", "UNKNOWN"),
-        "restricted": gis.get("restricted", False),
-        "gis": gis,
-        "weather": weather,
-        "ocean": ocean,
-        "advisory": advisory
+        "current": (
+            "temperature_2m,"
+            "relative_humidity_2m,"
+            "apparent_temperature,"
+            "precipitation,"
+            "weather_code,"
+            "wind_speed_10m,"
+            "wind_direction_10m,"
+            "wind_gusts_10m"
+        ),
+        "timezone": "UTC",
     }
 
+    try:
+        response = requests.get(
+            url,
+            params=params,
+            timeout=20,
+        )
+        response.raise_for_status()
+
+        result = response.json()
+
+        return {
+            "available": True,
+            "source": "Open-Meteo",
+            "retrieved_at": datetime.now(
+                timezone.utc
+            ).isoformat(),
+            "current": result.get("current", {}),
+            "units": result.get("current_units", {}),
+        }
+
+    except (requests.RequestException, ValueError) as exc:
+        print(f"Weather retrieval failed: {exc}")
+
+        return {
+            "available": False,
+            "source": "Open-Meteo",
+            "error": str(exc),
+        }
+
 
 # ============================================================
-# ROUTE PLANNING
+# 4. FETCH MARINE CONDITIONS
 # ============================================================
 
-def run_route_planning(
-    origin_name,
-    destination_name
-):
-    """
-    Complete route-planning workflow.
+def get_marine_conditions(latitude, longitude):
+    """Fetch available wave and marine observations/forecasts."""
 
-    1. Resolve origin
-    2. Resolve destination
-    3. Generate direct route
-    4. Generate alternate candidates
-    5. Evaluate each point
-    6. Recalculate route risk
-    7. Select safest feasible route
-    """
+    url = "https://marine-api.open-meteo.com/v1/marine"
 
-    print("\n================================")
-    print("       ROUTE INTELLIGENCE")
-    print("================================")
+    params = {
+        "latitude": latitude,
+        "longitude": longitude,
+        "current": (
+            "wave_height,"
+            "wave_direction,"
+            "wave_period"
+        ),
+        "timezone": "UTC",
+    }
 
-    print(
-        f"\nOrigin      : {origin_name}"
-    )
+    try:
+        response = requests.get(
+            url,
+            params=params,
+            timeout=20,
+        )
+        response.raise_for_status()
 
-    print(
-        f"Destination : {destination_name}"
-    )
+        result = response.json()
 
-    # ========================================================
-    # ORIGIN
-    # ========================================================
+        return {
+            "available": True,
+            "source": "Open-Meteo Marine API",
+            "retrieved_at": datetime.now(
+                timezone.utc
+            ).isoformat(),
+            "current": result.get("current", {}),
+            "units": result.get("current_units", {}),
+            "note": (
+                "Marine API values may be model-derived forecasts, "
+                "not direct real-time buoy observations."
+            ),
+        }
 
-    print(
-        "\n--------------------------------"
-    )
+    except (requests.RequestException, ValueError) as exc:
+        print(f"Marine data retrieval failed: {exc}")
 
-    print(
-        "Resolving origin..."
-    )
+        return {
+            "available": False,
+            "source": "Open-Meteo Marine API",
+            "error": str(exc),
+        }
 
-    origin_data = get_location(
-        origin_name
-    )
 
-    origin = origin_data[
-        "coordinates"
+# ============================================================
+# 5. GENERATE A GROUNDED MARINE SUMMARY
+# ============================================================
+
+def generate_summary(query, location, weather, marine):
+    """Summarize retrieved data without inventing missing observations."""
+
+    evidence = {
+        "query": query,
+        "location": location,
+        "weather": weather,
+        "marine_conditions": marine,
+    }
+
+    if client is not None:
+        prompt = f"""
+You are SAPTHA SAGARA, a marine intelligence assistant.
+
+Answer the user's question using ONLY the supplied evidence.
+
+Rules:
+1. Do not invent weather readings, wave measurements, warnings,
+   fishing advisories, or official government alerts.
+2. Clearly identify unavailable data.
+3. Distinguish model-derived data from official observations.
+4. Do not claim that fishing is safe based only on these data.
+5. If no official fishing advisory is supplied, say that an
+   official advisory has not been verified.
+6. Give practical, cautious guidance and mention the data time.
+7. Do not present yourself as a substitute for official marine
+   forecasts or coast guard instructions.
+
+User question:
+{query}
+
+Retrieved evidence:
+{json.dumps(evidence, indent=2, default=str)}
+"""
+
+        try:
+            response = client.models.generate_content(
+                model=MODEL_NAME,
+                contents=prompt,
+            )
+
+            if getattr(response, "text", None):
+                return response.text
+
+        except Exception as exc:
+            print(f"Gemini summary failed: {exc}")
+
+    # Fallback: provide data without depending on Gemini.
+    weather_current = weather.get("current", {})
+    marine_current = marine.get("current", {})
+
+    parts = [
+        f"Marine conditions for {location.get('name', 'the requested area')}.",
+        "These results are informational and are not an official safety clearance.",
     ]
 
-    print(
-        f"Origin: {origin_data['name']}"
-    )
-
-    print(
-        f"Coordinates: "
-        f"{origin[0]}, {origin[1]}"
-    )
-
-    # ========================================================
-    # DESTINATION
-    # ========================================================
-
-    print(
-        "\n--------------------------------"
-    )
-
-    print(
-        "Resolving destination..."
-    )
-
-    destination_data = get_location(
-        destination_name
-    )
-
-    destination = destination_data[
-        "coordinates"
-    ]
-
-    print(
-        f"Destination: "
-        f"{destination_data['name']}"
-    )
-
-    print(
-        f"Coordinates: "
-        f"{destination[0]}, {destination[1]}"
-    )
-
-    # ========================================================
-    # CANDIDATE ROUTES
-    # ========================================================
-
-    print(
-        "\n--------------------------------"
-    )
-
-    print(
-        "Generating route candidates..."
-    )
-
-    # --------------------------------------------------------
-    # Create candidates directly through route engine
-    # --------------------------------------------------------
-
-    from route_engine import generate_candidate_routes
-
-    candidate_routes = generate_candidate_routes(
-        origin,
-        destination,
-        number_of_waypoints=5
-    )
-
-    print(
-        f"Candidate routes: "
-        f"{len(candidate_routes)}"
-    )
-
-    # ========================================================
-    # EVALUATE EACH CANDIDATE
-    # ========================================================
-
-    evaluated_routes = []
-
-    for candidate in candidate_routes:
-
-        route_id = candidate[
-            "route_id"
-        ]
-
-        route_type = candidate[
-            "route_type"
-        ]
-
-        route_points = candidate[
-            "route_points"
-        ]
-
-        print(
-            "\n================================"
+    if weather.get("available"):
+        parts.append(
+            "Weather data: "
+            + json.dumps(weather_current, default=str)
         )
-
-        print(
-            f"Evaluating {route_id} "
-            f"({route_type})"
-        )
-
-        print(
-            "================================"
-        )
-
-        point_analysis = []
-
-        for index, point in enumerate(
-            route_points,
-            start=1
-        ):
-
-            print(
-                f"\nPoint {index}/{len(route_points)}"
-            )
-
-            print(
-                f"Coordinates: "
-                f"{point[0]}, {point[1]}"
-            )
-
-            try:
-
-                analysis = analyze_route_point(
-                    point
-                )
-
-                point_analysis.append({
-                    "point_index": index,
-                    "point": point,
-                    **analysis
-                })
-
-                print(
-                    f"Risk: "
-                    f"{analysis['risk_score']} "
-                    f"({analysis['risk_level']})"
-                )
-
-                print(
-                    f"Restricted: "
-                    f"{analysis['restricted']}"
-                )
-
-            except Exception as error:
-
-                print(
-                    f"Point analysis error: "
-                    f"{error}"
-                )
-
-                # Fail-safe:
-                # unknown point is treated as high risk
-
-                point_analysis.append({
-                    "point_index": index,
-                    "point": point,
-                    "risk_score": 100,
-                    "risk_level": "EXTREME",
-                    "restricted": False,
-                    "error": str(error)
-                })
-
-        # ----------------------------------------------------
-        # Evaluate complete route
-        # ----------------------------------------------------
-
-        route_result = generate_route(
-            origin=origin,
-            destination=destination,
-            alternate_route=False,
-            number_of_waypoints=5
-        )
-
-        # ----------------------------------------------------
-        # Replace default route risk with actual point data
-        # ----------------------------------------------------
-
-        risk_scores = [
-            float(
-                point.get(
-                    "risk_score",
-                    0
-                )
-            )
-            for point in point_analysis
-        ]
-
-        restricted_points = [
-            point
-            for point in point_analysis
-            if point.get(
-                "restricted",
-                False
-            )
-        ]
-
-        if restricted_points:
-
-            overall_risk_score = 100
-
-            overall_risk_level = "EXTREME"
-
-            route_status = "BLOCKED"
-
-            recommendation = "DO_NOT_TRAVEL"
-
-        else:
-
-            overall_risk_score = (
-                max(risk_scores)
-                if risk_scores
-                else 0
-            )
-
-            if overall_risk_score >= 75:
-
-                overall_risk_level = "EXTREME"
-                route_status = "HIGH_RISK"
-                recommendation = "DO_NOT_TRAVEL"
-
-            elif overall_risk_score >= 50:
-
-                overall_risk_level = "HIGH"
-                route_status = "HIGH_RISK"
-                recommendation = "CAUTION"
-
-            elif overall_risk_score >= 25:
-
-                overall_risk_level = "MODERATE"
-                route_status = "SAFE"
-                recommendation = "CAUTION"
-
-            else:
-
-                overall_risk_level = "LOW"
-                route_status = "SAFE"
-                recommendation = "FAVORABLE"
-
-        # ----------------------------------------------------
-        # Distance
-        # ----------------------------------------------------
-
-        route_distance = sum(
-            calculate_distance(
-                route_points[i],
-                route_points[i + 1]
-            )
-            for i in range(
-                len(route_points) - 1
-            )
-        )
-
-        direct_distance = calculate_distance(
-            origin,
-            destination
-        )
-
-        evaluated_routes.append({
-            "route_id": route_id,
-
-            "route_type": route_type,
-
-            "route_points": route_points,
-
-            "point_analysis": point_analysis,
-
-            "route_distance_km": round(
-                route_distance,
-                2
-            ),
-
-            "direct_distance_km": round(
-                direct_distance,
-                2
-            ),
-
-            "distance_difference_km": round(
-                route_distance - direct_distance,
-                2
-            ),
-
-            "risk_score": round(
-                overall_risk_score,
-                2
-            ),
-
-            "risk_level": overall_risk_level,
-
-            "route_status": route_status,
-
-            "recommendation": recommendation,
-
-            "restricted_points": restricted_points
-        })
-
-    # ========================================================
-    # SELECT BEST ROUTE
-    # ========================================================
-
-    feasible_routes = [
-        route
-        for route in evaluated_routes
-        if route["route_status"] != "BLOCKED"
-    ]
-
-    if feasible_routes:
-
-        selected_route = min(
-            feasible_routes,
-            key=lambda route: (
-                route["risk_score"],
-                route["route_distance_km"]
-            )
-        )
-
     else:
+        parts.append("Weather data is currently unavailable.")
 
-        selected_route = min(
-            evaluated_routes,
-            key=lambda route: (
-                route["risk_score"],
-                route["route_distance_km"]
-            )
+    if marine.get("available"):
+        parts.append(
+            "Marine data: "
+            + json.dumps(marine_current, default=str)
         )
+    else:
+        parts.append("Marine data is currently unavailable.")
 
-    # ========================================================
-    # ROUTE CHANGE DETECTION
-    # ========================================================
-
-    direct_route = next(
-        route
-        for route in evaluated_routes
-        if route["route_id"] == "DIRECT"
+    parts.append(
+        "No official fishing advisory was verified by this request. "
+        "Check relevant official marine forecasts and local authorities "
+        "before making a trip."
     )
 
-    route_changed = (
-        selected_route["route_id"]
-        != "DIRECT"
-    )
+    return "\n\n".join(parts)
 
-    # ========================================================
-    # FINAL ROUTE ENGINE RESULT
-    # ========================================================
 
-    final_route = generate_route(
-        origin=origin,
-        destination=destination,
-        risk_score=selected_route[
-            "risk_score"
-        ],
-        restricted=(
-            selected_route["route_status"]
-            == "BLOCKED"
-        ),
-        origin_risk=(
-            direct_route[
-                "point_analysis"
-            ][0].get(
-                "risk_score",
-                0
-            )
-        ),
-        destination_risk=(
-            direct_route[
-                "point_analysis"
-            ][-1].get(
-                "risk_score",
-                0
-            )
-        ),
-        number_of_waypoints=5
-    )
+# ============================================================
+# 6. MARINE QUERY ENTRY POINT — USED BY FASTAPI
+# ============================================================
 
-    # Use the actual selected route points
-    final_route["route_points"] = (
-        selected_route["route_points"]
-    )
+def run_agent(query):
+    """Process a marine intelligence query and return structured data."""
 
-    # Recalculate selected route segments
-    from route_engine import calculate_route_segments
+    if not isinstance(query, str) or len(query.strip()) < 2:
+        return {
+            "success": False,
+            "error": "Please provide a valid marine query.",
+        }
 
-    final_route["segments"] = (
-        calculate_route_segments(
-            selected_route["route_points"]
-        )
-    )
+    query = query.strip()
+    place_name = extract_location(query)
+    location = get_location(place_name)
 
-    final_route.update({
+    if location.get("error"):
+        return {
+            "success": False,
+            "query": query,
+            "requested_location": place_name,
+            "error": location["error"],
+            "details": location.get("details"),
+        }
 
-        "route_id": selected_route[
-            "route_id"
-        ],
+    latitude = location["latitude"]
+    longitude = location["longitude"]
 
-        "route_type": selected_route[
-            "route_type"
-        ],
+    weather = get_weather(latitude, longitude)
+    marine = get_marine_conditions(latitude, longitude)
 
-        "route_distance_km": selected_route[
-            "route_distance_km"
-        ],
-
-        "direct_distance_km": selected_route[
-            "direct_distance_km"
-        ],
-
-        "distance_difference_km": selected_route[
-            "distance_difference_km"
-        ],
-
-        "risk_score": selected_route[
-            "risk_score"
-        ],
-
-        "risk_level": selected_route[
-            "risk_level"
-        ],
-
-        "recommendation": selected_route[
-            "recommendation"
-        ],
-
-        "route_blocked": (
-            selected_route[
-                "route_status"
-            ] == "BLOCKED"
-        ),
-
-        "alternate_route_checked": True,
-
-        "alternate_route_used": route_changed,
-
-        "route_changed": route_changed,
-
-        "routes_evaluated": len(
-            evaluated_routes
-        ),
-
-        "candidate_routes": evaluated_routes,
-
-        "direct_route": direct_route,
-
-        "selected_route": selected_route,
-
-        "highest_risk_point": (
-            max(
-                selected_route[
-                    "point_analysis"
-                ],
-                key=lambda x: x.get(
-                    "risk_score",
-                    0
-                )
-            )
-            if selected_route[
-                "point_analysis"
-            ]
-            else None
-        ),
-
-        "points_analyzed": len(
-            selected_route[
-                "point_analysis"
-            ]
-        ),
-
-        "selection_reason": (
-            "Alternative route selected because "
-            "it provides a lower-risk feasible path."
-            if route_changed
-            else
-            "Direct route remains the best "
-            "evaluated feasible route."
-        ),
-
-        "risk_analysis_method": (
-            "Each route waypoint was evaluated using "
-            "weather, ocean conditions, GIS restrictions "
-            "and the deterministic marine risk engine."
-        ),
-
-        "route_method": (
-            "Geometric candidate-route generation "
-            "with environmental risk re-evaluation."
-        ),
-
-        "navigation_warning": (
-            "This is a marine decision-support prototype. "
-            "Generated waypoints are not certified "
-            "navigational waypoints."
-        )
-    })
-
-    # ========================================================
-    # PRINT SUMMARY
-    # ========================================================
-
-    print(
-        "\n================================"
-    )
-
-    print(
-        "       ROUTE SUMMARY"
-    )
-
-    print(
-        "================================"
-    )
-
-    print(
-        f"\nSelected route: "
-        f"{final_route['route_id']}"
-    )
-
-    print(
-        f"Route type: "
-        f"{final_route['route_type']}"
-    )
-
-    print(
-        f"Routes evaluated: "
-        f"{final_route['routes_evaluated']}"
-    )
-
-    print(
-        f"Risk: "
-        f"{final_route['risk_score']} "
-        f"({final_route['risk_level']})"
-    )
-
-    print(
-        f"Distance: "
-        f"{final_route['route_distance_km']} km"
-    )
-
-    print(
-        f"Route changed: "
-        f"{final_route['route_changed']}"
-    )
-
-    print(
-        f"Recommendation: "
-        f"{final_route['recommendation']}"
-    )
-
-    print(
-        "\nSelection reason:"
-    )
-
-    print(
-        final_route[
-            "selection_reason"
-        ]
+    summary = generate_summary(
+        query,
+        location,
+        weather,
+        marine,
     )
 
     return {
-        "intent": "ROUTE_PLANNING",
-
-        "origin": {
-            "name": origin_data[
-                "name"
-            ],
-            "coordinates": origin
-        },
-
-        "destination": {
-            "name": destination_data[
-                "name"
-            ],
-            "coordinates": destination
-        },
-
-        "route": final_route
+        "success": True,
+        "query": query,
+        "generated_at": datetime.now(
+            timezone.utc
+        ).isoformat(),
+        "location": location,
+        "weather": weather,
+        "marine_conditions": marine,
+        "summary": summary,
+        "limitations": [
+            "Weather and marine data may be model-derived.",
+            "No official fishing advisory is automatically verified.",
+            "This output is not a certified navigation or safety system.",
+        ],
     }
 
 
 # ============================================================
-# MAIN AGENT
+# 7. ROUTE DISTANCE AND WAYPOINT HELPERS
 # ============================================================
 
-def run_agent(
-    user_query
-):
-    """
-    Main SAPTHA SAGARA agent pipeline.
-    """
+def calculate_distance(origin, destination):
+    """Calculate straight-line distance between two coordinates in km."""
 
-    print(
-        "\n================================"
+    lat1 = math.radians(origin[0])
+    lon1 = math.radians(origin[1])
+    lat2 = math.radians(destination[0])
+    lon2 = math.radians(destination[1])
+
+    delta_lat = lat2 - lat1
+    delta_lon = lon2 - lon1
+
+    a = (
+        math.sin(delta_lat / 2) ** 2
+        + math.cos(lat1)
+        * math.cos(lat2)
+        * math.sin(delta_lon / 2) ** 2
     )
 
-    print(
-        "       MARINE AI AGENT"
+    a = min(1.0, max(0.0, a))
+
+    return 6371.0 * 2 * math.atan2(
+        math.sqrt(a),
+        math.sqrt(1 - a),
     )
 
-    print(
-        "================================"
-    )
 
-    print(
-        f"\nUser:\n{user_query}"
-    )
+def build_route_points(origin, destination, number_of_points=10):
+    """Create interpolated waypoints, not a navigable sea route."""
 
-    # ========================================================
-    # UNDERSTAND QUERY
-    # ========================================================
+    start_lat = origin[0]
+    start_lon = origin[1]
+    end_lat = destination[0]
+    end_lon = destination[1]
 
-    print(
-        "\nUnderstanding user query..."
-    )
+    number_of_points = max(2, int(number_of_points))
+    points = []
 
-    intent_data = understand_query(
-        user_query
-    )
+    for index in range(number_of_points):
+        fraction = index / (number_of_points - 1)
 
-    print(
-        f"Intent      : "
-        f"{intent_data.get('intent')}"
-    )
+        latitude = start_lat + fraction * (end_lat - start_lat)
+        longitude = start_lon + fraction * (end_lon - start_lon)
 
-    print(
-        f"Location    : "
-        f"{intent_data.get('location')}"
-    )
+        points.append({
+            "sequence": index + 1,
+            "latitude": round(latitude, 6),
+            "longitude": round(longitude, 6),
+        })
 
-    print(
-        f"Origin      : "
-        f"{intent_data.get('origin')}"
-    )
+    return points
 
-    print(
-        f"Destination : "
-        f"{intent_data.get('destination')}"
-    )
 
-    # ========================================================
-    # ROUTE PLANNING
-    # ========================================================
+# ============================================================
+# 8. ROUTE PLANNING ENTRY POINT — USED BY FASTAPI
+# ============================================================
 
-    if (
-        intent_data.get("intent")
-        == "ROUTE_PLANNING"
-    ):
+def run_route_planning(origin, destination):
+    """Return a sea-route visualization estimate between two locations."""
 
-        origin_name = intent_data.get(
-            "origin"
-        )
-
-        destination_name = intent_data.get(
-            "destination"
-        )
-
-        if not origin_name or not destination_name:
-
-            return (
-                "Please provide both an origin and "
-                "destination, for example: "
-                "'Find a route from Mangalore to Goa.'"
-            )
-
-        route_data = run_route_planning(
-            origin_name,
-            destination_name
-        )
-
-        return generate_final_response(
-            user_query,
-            route_data
-        )
-
-    # ========================================================
-    # NORMAL MARINE QUERY
-    # ========================================================
-
-    plan = create_plan(
-        user_query
-    )
-
-    location_name = (
-        plan.get("location")
-        or intent_data.get("location")
-    )
-
-    if not location_name:
-
-        return generate_final_response(
-            user_query,
-            {
-                "intent": intent_data,
-                "plan": plan
-            }
-        )
-
-    # ========================================================
-    # RESOLVE LOCATION
-    # ========================================================
-
-    location_data = get_location(
-        location_name
-    )
-
-    latitude = location_data[
-        "latitude"
-    ]
-
-    longitude = location_data[
-        "longitude"
-    ]
-
-    # ========================================================
-    # EXECUTE PLANNED TOOLS
-    # ========================================================
-
-    tool_results = {}
-
-    tools = plan.get(
-        "tools",
-        []
-    )
-
-    for tool_name in tools:
-
-        try:
-
-            print(
-                f"\nExecuting tool: "
-                f"{tool_name}"
-            )
-
-            tool_results[
-                tool_name
-            ] = execute_tool(
-                tool_name,
-                latitude,
-                longitude
-            )
-
-        except Exception as error:
-
-            tool_results[
-                tool_name
-            ] = {
-                "error": str(error)
-            }
-
-    # ========================================================
-    # DETERMINISTIC FISHING ADVISORY
-    # ========================================================
-
-    weather = tool_results.get(
-        "get_weather",
-        {}
-    )
-
-    ocean = tool_results.get(
-        "get_ocean_conditions",
-        {}
-    )
-
-    pfz = tool_results.get(
-        "get_pfz",
-        {}
-    )
-
-    gis = tool_results.get(
-        "get_gis",
-        {}
-    )
-
-    try:
-
-        fishing_advisory = (
-            generate_fishing_advisory(
-                weather=weather,
-                ocean=ocean,
-                pfz=pfz,
-                gis=gis
-            )
-        )
-
-    except Exception as error:
-
-        fishing_advisory = {
-            "error": str(error)
+    if not origin or not destination:
+        return {
+            "success": False,
+            "error": "Origin and destination are required.",
         }
 
-    # ========================================================
-    # FINAL DATA
-    # ========================================================
+    origin_location = get_location(origin)
+    destination_location = get_location(destination)
 
-    final_data = {
+    if origin_location.get("error"):
+        return {
+            "success": False,
+            "error": f"Origin lookup failed: {origin_location['error']}",
+        }
 
-        "intent": intent_data,
+    if destination_location.get("error"):
+        return {
+            "success": False,
+            "error": (
+                "Destination lookup failed: "
+                f"{destination_location['error']}"
+            ),
+        }
 
-        "plan": plan,
+    start = (
+        origin_location["latitude"],
+        origin_location["longitude"],
+    )
+    end = (
+        destination_location["latitude"],
+        destination_location["longitude"],
+    )
 
-        "location": location_data,
+    distance_km = calculate_distance(start, end)
 
-        "tool_results": tool_results,
+    try:
+        # searoute expects coordinates in [longitude, latitude] order.
+        sea_route = sr.searoute(
+            [start[1], start[0]],
+            [end[1], end[0]],
+            append_orig_dest=True,
+        )
 
-        "fishing_advisory": fishing_advisory
+        coordinates = sea_route["geometry"]["coordinates"]
+        route_distance_km = float(sea_route["properties"]["length"])
+
+        # Leaflet expects each point as [latitude, longitude].
+        waypoints = [
+            {
+                "sequence": index + 1,
+                "latitude": round(float(coordinate[1]), 6),
+                "longitude": round(float(coordinate[0]), 6),
+            }
+            for index, coordinate in enumerate(coordinates)
+        ]
+
+        route_type = "Sea-route visualization estimate"
+
+    except Exception as exc:
+        print(f"Sea-route generation failed: {type(exc).__name__}: {exc}")
+        return {
+            "success": False,
+            "error": (
+                "Unable to generate the sea-route estimate. "
+                "Check backend logs."
+            ),
+        }
+
+    return {
+        "success": True,
+        "origin": origin_location,
+        "destination": destination_location,
+        "straight_line_distance_km": round(distance_km, 2),
+        "route_distance_km": round(route_distance_km, 2),
+        "waypoints": waypoints,
+        "route_type": route_type,
+        "limitations": [
+            "This is a route visualization estimate, not a certified navigational route.",
+            "The route has not been verified against official nautical charts or current coastline data.",
+            "Bathymetry, vessel draft, shipping restrictions, currents, weather, and official marine warnings are not evaluated.",
+            "Do not use this result for operational navigation.",
+        ],
     }
 
-    # ========================================================
-    # FINAL RESPONSE
-    # ========================================================
 
-    return generate_final_response(
-        user_query,
-        final_data
-    )
-
-
-# ============================================================
-# CLI
-# ============================================================
-
-if __name__ == "__main__":
-
-    print(
-        "\n================================"
-    )
-
-    print(
-        "        SAPTHA SAGARA"
-    )
-
-    print(
-        "      MARINE AI AGENT"
-    )
-
-    print(
-        "================================"
-    )
-
-    while True:
-
-        try:
-
-            user_query = input(
-                "\nAsk the Marine Agent: "
-            ).strip()
-
-            if not user_query:
-                continue
-
-            if user_query.lower() in {
-                "exit",
-                "quit",
-                "q"
-            }:
-
-                print(
-                    "\nGoodbye."
-                )
-
-                break
-
-            try:
-
-                answer = run_agent(
-                    user_query
-                )
-
-                print(
-                    "\n================================"
-                )
-
-                print(
-                    "           RESPONSE"
-                )
-
-                print(
-                    "================================"
-                )
-
-                print(
-                    f"\n{answer}"
-                )
-
-            except Exception as error:
-
-                print(
-                    "\n================================"
-                )
-
-                print(
-                    "              ERROR"
-                )
-
-                print(
-                    "================================"
-                )
-
-                print(
-                    type(error).__name__
-                )
-
-                print(
-                    str(error)
-                )
-
-        except KeyboardInterrupt:
-
-            print(
-                "\n\nExiting SAPTHA SAGARA..."
-            )
-
-            break
-
-        except Exception as error:
-
-            print(
-                "\nUnexpected error:"
-            )
-
-            print(
-                str(error)
-            )
