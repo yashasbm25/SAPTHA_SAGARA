@@ -1466,3 +1466,107 @@ textarea:focus-visible {
     grid-column: auto;
   }
 }
+/* SAPTHA SAGARA — formatted AI marine intelligence report */
+
+.summary-text {
+  line-height: 1.75;
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+
+.summary-text .report-title {
+  font-size: 1.45rem;
+  line-height: 1.4;
+  font-weight: 700;
+  margin: 0 0 22px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--border-color, rgba(128, 128, 128, 0.25));
+}
+
+.summary-text .report-heading {
+  font-size: 1.12rem;
+  line-height: 1.5;
+  font-weight: 700;
+  margin: 28px 0 12px;
+}
+
+.summary-text .report-subheading {
+  font-size: 1rem;
+  line-height: 1.5;
+  font-weight: 650;
+  margin: 20px 0 8px;
+}
+
+.summary-text .report-paragraph {
+  margin: 0 0 14px;
+  line-height: 1.8;
+}
+
+.summary-text .report-list {
+  padding-left: 24px;
+  margin: 8px 0 18px;
+}
+
+.summary-text .report-list li {
+  padding-left: 4px;
+  margin-bottom: 9px;
+  line-height: 1.7;
+}
+
+.summary-text strong {
+  font-weight: 700;
+}
+
+.summary-text > :last-child {
+  margin-bottom: 0;
+}
+
+/* Compact marine intelligence report */
+.summary-text {
+  line-height: 1.45;
+  font-size: 14px;
+}
+
+.summary-text h1,
+.summary-text h2,
+.summary-text h3,
+.summary-text h4 {
+  margin-top: 10px;
+  margin-bottom: 4px;
+  line-height: 1.3;
+}
+
+.summary-text p {
+  margin-top: 3px;
+  margin-bottom: 5px;
+}
+
+.summary-text ul,
+.summary-text ol {
+  margin-top: 2px;
+  margin-bottom: 6px;
+  padding-left: 20px;
+}
+
+.summary-text li {
+  margin-top: 0;
+  margin-bottom: 2px;
+  padding: 0;
+}
+
+.summary-text li p {
+  margin: 0;
+}
+
+.summary-text strong {
+  font-weight: 600;
+}
+
+/* Remove unwanted spacing around report sections */
+.summary-text > *:first-child {
+  margin-top: 0;
+}
+
+.summary-text > *:last-child {
+  margin-bottom: 0;
+}
