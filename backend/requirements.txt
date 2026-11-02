@@ -1,0 +1,7 @@
+fastapi
+uvicorn[standard]
+pydantic
+requests
+python-dotenv
+google-genai
+searoute==1.6.0
