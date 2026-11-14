@@ -1,4 +1,3 @@
-
 from fastapi import APIRouter, HTTPException
 from starlette.concurrency import run_in_threadpool
 
@@ -11,10 +10,14 @@ router = APIRouter(prefix="/marine", tags=["Marine Intelligence"])
 async def marine_query(request: MarineQueryRequest):
     try:
         # Import lazily so agent dependencies are loaded only when needed.
-
         from agent import run_agent
 
-        result = await run_in_threadpool(run_agent, request.query)
+        result = await run_in_threadpool(
+            run_agent,
+            request.query,
+            request.origin,
+            request.destination,
+        )
 
         return APIResponse(
             success=True,

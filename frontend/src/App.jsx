@@ -1,4 +1,3 @@
-
 import { useEffect, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -37,8 +36,8 @@ function formatValue(value, unit = "") {
 
   return Number.isFinite(number)
     ? `${number.toLocaleString("en-IN", {
-        maximumFractionDigits: 2,
-      })}${unit}`
+      maximumFractionDigits: 2,
+    })}${unit}`
     : `${value}${unit}`;
 }
 
@@ -55,11 +54,6 @@ function formatTimestamp(value) {
   });
 }
 
-/**
- * Clean Markdown returned by the AI.
- * Handles escaped headings/bold markers and removes the
- * accidental "svgResponse received" text if it appears in the report.
- */
 function cleanReportMarkdown(value) {
   if (typeof value !== "string" || !value.trim()) {
     return "The API returned data without a summary.";
@@ -71,9 +65,6 @@ function cleanReportMarkdown(value) {
     .trim();
 }
 
-/**
- * Render the AI report as formatted Markdown instead of raw text.
- */
 function MarineReport({ summary }) {
   const markdown = cleanReportMarkdown(summary);
 
@@ -184,10 +175,12 @@ function App() {
 
   useEffect(() => {
     checkBackend();
+    submitRoute(null, "Mangalore", "Goa");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   async function submitMarineQuery(event) {
-    event.preventDefault();
+    event?.preventDefault?.();
 
     if (query.trim().length < 2) {
       setMarineError("Enter a marine query first.");
@@ -196,7 +189,6 @@ function App() {
 
     setMarineLoading(true);
     setMarineError("");
-    setMarineResult(null);
 
     try {
       const response = await fetch(`${API}/api/marine/query`, {
@@ -206,59 +198,6 @@ function App() {
         },
         body: JSON.stringify({
           query: query.trim(),
-        }),
-      });
-
-      const payload = await response.json();
-
-      if (!response.ok) {
-        throw new Error(
-          payload.detail ||
-            payload.error ||
-            "Marine query failed."
-        );
-      }
-
-      if (
-        payload.success === false ||
-        payload.data?.success === false
-      ) {
-        throw new Error(
-          payload.data?.error ||
-            payload.error ||
-            "The query could not be completed."
-        );
-      }
-
-      setMarineResult(payload.data ?? payload);
-    } catch (error) {
-      setMarineError(
-        `${error.message} Check that the backend is running on port 8000.`
-      );
-    } finally {
-      setMarineLoading(false);
-    }
-  }
-
-  async function submitRoute(event) {
-    event.preventDefault();
-
-    if (!origin.trim() || !destination.trim()) {
-      setRouteError("Enter both an origin and a destination.");
-      return;
-    }
-
-    setRouteLoading(true);
-    setRouteError("");
-    setRouteResult(null);
-
-    try {
-      const response = await fetch(`${API}/api/route/plan`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
           origin: origin.trim(),
           destination: destination.trim(),
         }),
@@ -269,23 +208,95 @@ function App() {
       if (!response.ok) {
         throw new Error(
           payload.detail ||
-            payload.error ||
-            "Route planning failed."
+          payload.error ||
+          "Marine query failed."
         );
       }
+
+      const data = payload.data ?? payload;
 
       if (
         payload.success === false ||
-        payload.data?.success === false
+        data?.success === false
       ) {
         throw new Error(
-          payload.data?.error ||
-            payload.error ||
-            "The route could not be planned."
+          data?.error ||
+          payload.error ||
+          "The query could not be completed."
         );
       }
 
-      setRouteResult(payload.data ?? payload);
+      setMarineResult(data);
+
+      // ONLY overwrite the route if the user explicitly asked to plan a new route in their query
+      if (data.route_updated_by_query && data.recommended_route?.success) {
+        if (data.recommended_origin) {
+          setOrigin(data.recommended_origin);
+        }
+        if (data.recommended_destination) {
+          setDestination(data.recommended_destination);
+        }
+        setRouteResult(data.recommended_route);
+      }
+    } catch (error) {
+      setMarineError(
+        `${error.message} Check that the backend is running on port 8000.`
+      );
+    } finally {
+      setMarineLoading(false);
+    }
+  }
+
+  async function submitRoute(event, customOrigin, customDestination) {
+    event?.preventDefault?.();
+
+    const activeOrigin = (customOrigin ?? origin).trim();
+    const activeDestination = (customDestination ?? destination).trim();
+
+    if (!activeOrigin || !activeDestination) {
+      setRouteError("Enter both an origin and a destination.");
+      return;
+    }
+
+    setRouteLoading(true);
+    setRouteError("");
+
+    try {
+      const response = await fetch(`${API}/api/route/plan`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          origin: activeOrigin,
+          destination: activeDestination,
+        }),
+      });
+
+      const payload = await response.json();
+
+      if (!response.ok) {
+        throw new Error(
+          payload.detail ||
+          payload.error ||
+          "Route planning failed."
+        );
+      }
+
+      const data = payload.data ?? payload;
+
+      if (
+        payload.success === false ||
+        data?.success === false
+      ) {
+        throw new Error(
+          data?.error ||
+          payload.error ||
+          "The route could not be planned."
+        );
+      }
+
+      setRouteResult(data);
     } catch (error) {
       setRouteError(
         `${error.message} Check that the backend is running on port 8000.`
@@ -295,11 +306,11 @@ function App() {
     }
   }
 
-  const weather = marineResult?.weather;
+  const weather = marineResult?.weather || routeResult?.weather;
   const weatherCurrent = weather?.current ?? {};
   const weatherUnits = weather?.units ?? {};
 
-  const marine = marineResult?.marine_conditions;
+  const marine = marineResult?.marine_conditions || routeResult?.marine_conditions;
   const marineCurrent = marine?.current ?? {};
   const marineUnits = marine?.units ?? {};
 
@@ -308,6 +319,10 @@ function App() {
   const routeDistance = routeResult?.straight_line_distance_km;
   const routeSeaDistance = routeResult?.route_distance_km;
   const routePoints = routeResult?.waypoints ?? [];
+
+  // Keep the latest PFZ payload synchronized between route planning and queries
+  const activePfzData = routeResult?.pfz || marineResult?.pfz;
+  const activeAdvisory = marineResult?.fishing_advisory || routeResult?.fishing_advisory;
 
   function scrollTo(id) {
     document.getElementById(id)?.scrollIntoView({
@@ -321,9 +336,8 @@ function App() {
   return (
     <div className="app-shell">
       <aside
-        className={`sidebar ${
-          mobileMenuOpen ? "sidebar-open" : ""
-        }`}
+        className={`sidebar ${mobileMenuOpen ? "sidebar-open" : ""
+          }`}
       >
         <div className="brand">
           <div className="brand-mark">
@@ -550,9 +564,8 @@ function App() {
                 }
                 note={
                   marineCurrent.wave_period != null
-                    ? `Wave period: ${marineCurrent.wave_period} ${
-                        marineUnits.wave_period ?? "s"
-                      }`
+                    ? `Wave period: ${marineCurrent.wave_period} ${marineUnits.wave_period ?? "s"
+                    }`
                     : "Wave period unavailable"
                 }
               />
@@ -574,8 +587,8 @@ function App() {
                 <h2>Ask the ocean</h2>
 
                 <p className="section-description">
-                  Ask a marine question and retrieve available weather
-                  and wave data.
+                  Ask a marine question and retrieve available weather,
+                  wave, SST, and Chlorophyll-a PFZ data.
                 </p>
               </div>
 
@@ -597,13 +610,13 @@ function App() {
                   id="marine-query"
                   value={query}
                   onChange={(event) => setQuery(event.target.value)}
-                  placeholder="Ask about marine weather, wind, waves or coastal conditions..."
+                  placeholder="Ask about marine weather, wind, waves, PFZs, or conditions along your current route..."
                   rows={4}
                 />
 
                 <div className="query-footer">
                   <span>
-                    Use a location in your question for better results.
+                    Ask about a coastal location or your active route.
                   </span>
 
                   <button
@@ -627,6 +640,17 @@ function App() {
 
                 <div className="suggestion-row">
                   <span>Try:</span>
+
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setQuery(
+                        "What are the conditions along my current route?"
+                      )
+                    }
+                  >
+                    Current route conditions
+                  </button>
 
                   <button
                     type="button"
@@ -669,7 +693,7 @@ function App() {
                 </div>
 
                 <div className="assistant-feature">
-                  <CheckCircle2 size={16} /> Weather and marine data
+                  <CheckCircle2 size={16} /> Live SST &amp; Chlorophyll-a PFZs
                 </div>
 
                 <div className="assistant-feature">
@@ -706,9 +730,8 @@ function App() {
                 <div className="source-grid">
                   <div className="source-item">
                     <span
-                      className={`status-dot ${
-                        weather?.available ? "online" : "offline"
-                      }`}
+                      className={`status-dot ${weather?.available ? "online" : "offline"
+                        }`}
                     />
 
                     <div>
@@ -725,9 +748,8 @@ function App() {
 
                   <div className="source-item">
                     <span
-                      className={`status-dot ${
-                        marine?.available ? "online" : "offline"
-                      }`}
+                      className={`status-dot ${marine?.available ? "online" : "offline"
+                        }`}
                     />
 
                     <div>
@@ -739,6 +761,46 @@ function App() {
 
                     <span className="source-state">
                       {marine?.available ? "Available" : "Unavailable"}
+                    </span>
+                  </div>
+
+                  <div className="source-item">
+                    <span
+                      className={`status-dot ${marineResult?.pfz?.available ? "online" : "offline"
+                        }`}
+                    />
+
+                    <div>
+                      <strong>PFZ &amp; Chlorophyll-a Engine</strong>
+                      <small>
+                        {marineResult?.pfz?.source || "INCOIS + Live SST/Chl-a"}
+                      </small>
+                    </div>
+
+                    <span className="source-state">
+                      {marineResult?.pfz?.zones?.length || 0} Active Zones
+                    </span>
+                  </div>
+
+                  <div className="source-item">
+                    <span
+                      className={`status-dot ${marineResult?.fishing_advisory?.risk_level === "LOW"
+                          ? "online"
+                          : "checking"
+                        }`}
+                    />
+
+                    <div>
+                      <strong>Fishing Risk Assessment</strong>
+                      <small>
+                        {marineResult?.fishing_advisory?.recommendation ||
+                          "Deterministic risk engine"}
+                      </small>
+                    </div>
+
+                    <span className="source-state">
+                      {marineResult?.fishing_advisory?.status || "Evaluated"} (
+                      {marineResult?.fishing_advisory?.risk_score ?? 0}/100)
                     </span>
                   </div>
                 </div>
@@ -778,7 +840,10 @@ function App() {
               </div>
             </div>
 
-            <form className="route-form" onSubmit={submitRoute}>
+            <form
+              className="route-form"
+              onSubmit={(e) => submitRoute(e, origin, destination)}
+            >
               <div className="route-input-group">
                 <label htmlFor="origin">Origin</label>
 
@@ -787,9 +852,10 @@ function App() {
 
                   <input
                     id="origin"
+                    list="indian-ports-list"
                     value={origin}
                     onChange={(event) => setOrigin(event.target.value)}
-                    placeholder="e.g. Mangalore"
+                    placeholder="e.g. Kannur, Mangalore, Chennai"
                     required
                   />
                 </div>
@@ -807,11 +873,12 @@ function App() {
 
                   <input
                     id="destination"
+                    list="indian-ports-list"
                     value={destination}
                     onChange={(event) =>
                       setDestination(event.target.value)
                     }
-                    placeholder="e.g. Goa"
+                    placeholder="e.g. Goa, Kochi, Paradip"
                     required
                   />
                 </div>
@@ -969,7 +1036,7 @@ function App() {
                 <h2>Marine operations map</h2>
 
                 <p className="section-description">
-                  Explore coastal locations and view the generated route estimate.
+                  Explore coastal locations, toggle PFZ layers, and view the generated route estimate.
                 </p>
               </div>
             </div>
@@ -978,6 +1045,9 @@ function App() {
               origin={origin}
               destination={destination}
               routeData={routeResult}
+              pfzData={activePfzData}
+              locationData={marineResult?.location}
+              advisoryData={activeAdvisory}
               onOriginChange={setOrigin}
               onDestinationChange={setDestination}
               onPlanRoute={submitRoute}
